@@ -22,23 +22,22 @@ from flask import (Flask, after_this_request, jsonify, request, send_file,
                    send_from_directory)
 
 app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)  # baca IP asli di balik proxy
-# URL website Vercel Anda, contoh: https://mediaflow.vercel.app
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
+
 ORIGIN = os.environ.get("ALLOWED_ORIGIN", "").rstrip("/")
 BASE = os.path.dirname(os.path.abspath(__file__))
-COOKIES = os.path.join(BASE, "cookies.txt")  # opsional, format Netscape
+COOKIES = os.path.join(BASE, "cookies.txt")
 ALLOWED = ("facebook.com", "fb.watch", "instagram.com", "tiktok.com")
 IMG_EXT = ("jpg", "jpeg", "png", "webp")
-MAX_MB = 150        # batas ukuran file
-MAX_SEC = 600       # batas durasi media (detik)
-MAX_TIME = 120      # batas waktu proses download (detik)
-MAX_PHOTOS = 20     # batas jumlah foto per postingan
-RATE = 40           # maks permintaan per IP per menit
-MAX_JOBS = 3        # maks download berjalan bersamaan
+MAX_MB = 150
+MAX_SEC = 600
+MAX_TIME = 120
+MAX_PHOTOS = 20
+RATE = 40
+MAX_JOBS = 3
 HITS = defaultdict(deque)
 JOBS = threading.BoundedSemaphore(MAX_JOBS)
 VERSION = "foto-v3"
-# Set DEBUG_ERRORS=1 di host untuk menampilkan detail penyebab error di website.
 DEBUG = os.environ.get("DEBUG_ERRORS") == "1"
 LAST = threading.local()
 
@@ -50,7 +49,6 @@ def err(code, status=400, detail=None):
 
 
 def clean(x, n=200):
-    """Teks singkat tanpa URL, aman ditampilkan."""
     return re.sub(r"https?://\S+", "<url>", str(x)).replace("\n", " ").strip()[:n]
 
 
@@ -93,7 +91,8 @@ def ytdl_base():
     return o
 
 
-# ---------- foto lewat gallery-dl ----------
+# ---------- Foto lewat gallery-dl ----------
+
 def gdl(*args, timeout):
     cmd = [sys.executable, "-m", "gallery_dl"]
     if os.path.exists(COOKIES):
@@ -109,52 +108,75 @@ def text(x):
 def gdl_reason(r):
     e = (r.stderr or "").lower()
     if "no module named" in e:
-        return "no_gdl"          # gallery-dl belum terpasang di server
+        return "no_gdl"
     if any(k in e for k in ("login", "401", "403", "auth", "cookie",
                             "checkpoint", "challenge")):
-        return "login"           # butuh login / cookies
+        return "login"
     return "none"
 
 
 def gdl_info(url):
-    """Mengembalikan (info, alasan). info None jika tidak ada foto / gagal."""
+    """Mengembalikan (info, alasan). info None jika tidak ada foto."""
     LAST.gdl = "timeout / gagal dijalankan"
     try:
         r = gdl("-j", "--range", f"1-{MAX_PHOTOS}", url, timeout=45)
     except Exception:
         return None, "none"
+
     lines = (r.stderr or "").strip().splitlines()
     LAST.gdl = clean(lines[-1]) if lines else "tidak ada foto di hasil"
+
     try:
         data = json.loads(r.stdout or "[]")
     except ValueError:
         data = []
-    files = [e for e in data if isinstance(e, list) and len(e) >= 3
-             and e[0] == 3 and isinstance(e[2], dict)]
-    # i = nomor urut file di postingan (dipakai sebagai --range saat download)
-    imgs = [(i + 1, e) for i, e in enumerate(files)
-            if text(e[2].get("extension")).lower() in IMG_EXT]
+
+    files = [
+        e for e in data
+        if isinstance(e, list) and len(e) >= 3
+        and e[0] == 3 and isinstance(e[2], dict)
+    ]
+
+    imgs = [
+        (i + 1, e) for i, e in enumerate(files)
+        if text(e[2].get("extension")).lower() in IMG_EXT
+    ]
+
     if not imgs:
         return None, gdl_reason(r)
+
     m = imgs[0][1][2]
     owner = m.get("owner") if isinstance(m.get("owner"), dict) else {}
+
     return {
-        "title": (text(m.get("description")) or text(m.get("title"))
-                  or text(m.get("caption")) or "Foto")[:120],
-        "uploader": (text(m.get("username")) or text(owner.get("username"))
-                     or text(m.get("uploader")) or text(m.get("author"))),
+        "title": (
+            text(m.get("description")) or text(m.get("title"))
+            or text(m.get("caption")) or "Foto"
+        )[:120],
+        "uploader": (
+            text(m.get("username")) or text(owner.get("username"))
+            or text(m.get("uploader")) or text(m.get("author"))
+        ),
         "thumbnail": imgs[0][1][1],
         "count": len(imgs),
         "photos": [{"i": i, "u": e[1]} for i, e in imgs],
     }, ""
 
 
-# ---------- foto TikTok (slideshow) dibaca langsung dari halaman ----------
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-IMG_HOSTS = (".tiktokcdn.com", ".tiktokcdn-us.com", ".tiktokcdn-eu.com",
-             ".ibyteimg.com", ".byteimg.com", ".tiktokv.com", ".tiktok.com",
-             ".muscdn.com")
+# ---------- Foto TikTok / slideshow ----------
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
+
+IMG_HOSTS = (
+    ".tiktokcdn.com", ".tiktokcdn-us.com", ".tiktokcdn-eu.com",
+    ".ibyteimg.com", ".byteimg.com", ".tiktokv.com", ".tiktok.com",
+    ".muscdn.com"
+)
+
 MAX_IMG = 25 * 1024 * 1024
 
 
@@ -178,237 +200,446 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 
 def opener():
     return urllib.request.build_opener(
-        SafeRedirect, urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        SafeRedirect,
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+    )
 
 
-def find_key(o, key):
-    """Cari dict pertama yang memuat key (struktur halaman TikTok bisa berubah)."""
+def find_all_key(o, key):
+    """Kumpulkan semua dict yang memiliki key."""
+    found = []
+
     if isinstance(o, dict):
         if key in o:
-            return o
+            found.append(o)
+
         for v in o.values():
-            r = find_key(v, key)
-            if r:
-                return r
+            found.extend(find_all_key(v, key))
+
     elif isinstance(o, list):
         for v in o:
-            r = find_key(v, key)
-            if r:
-                return r
-    return None
+            found.extend(find_all_key(v, key))
+
+    return found
+
+
+def image_urls(image):
+    """Ambil URL foto dari beberapa variasi struktur JSON TikTok."""
+    if not isinstance(image, dict):
+        return []
+
+    candidates = []
+
+    for key in (
+        "imageURL", "imageUrl", "displayImage", "display_image",
+        "originImage", "origin_image"
+    ):
+        value = image.get(key)
+
+        if isinstance(value, dict):
+            for list_key in ("urlList", "url_list", "urls"):
+                items = value.get(list_key)
+                if isinstance(items, list):
+                    candidates.extend(items)
+
+            for scalar_key in ("url", "uri"):
+                if isinstance(value.get(scalar_key), str):
+                    candidates.append(value[scalar_key])
+
+        elif isinstance(value, str):
+            candidates.append(value)
+
+    for key in ("urlList", "url_list", "urls"):
+        if isinstance(image.get(key), list):
+            candidates.extend(image[key])
+
+    return list(dict.fromkeys(
+        x for x in candidates
+        if isinstance(x, str) and ok_img(x)
+    ))
 
 
 def tiktok_photos(url):
-    """Info foto dari halaman TikTok. None jika bukan slideshow / gagal."""
+    """Baca metadata slideshow TikTok dari HTML."""
     LAST.tt = ""
+
     try:
         req = urllib.request.Request(url, headers={
-            "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9"})
-        with opener().open(req, timeout=15) as r:
-            html = r.read(3_000_000).decode("utf-8", "ignore")
+            "User-Agent": UA,
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+
+        with opener().open(req, timeout=20) as r:
+            html = r.read(5_000_000).decode("utf-8", "ignore")
+
     except Exception as e:
-        LAST.tt = "halaman gagal dibuka: " + clean(e, 80)
+        LAST.tt = "halaman gagal dibuka: " + clean(e, 100)
         return None
-    m = re.search(r'<script id="(?:__UNIVERSAL_DATA_FOR_REHYDRATION__|SIGI_STATE)"[^>]*>(.*?)</script>',
-                  html, re.S)
-    if not m:
-        LAST.tt = "data halaman tidak ada (IP server kemungkinan diblokir/captcha)"
+
+    pattern = (
+        r"""<script\b(?=[^>]*\bid\s*=\s*["']"""
+        r"""(?:__UNIVERSAL_DATA_FOR_REHYDRATION__|SIGI_STATE)["'])"""
+        r"""[^>]*>(.*?)</script\s*>"""
+    )
+
+    match = re.search(pattern, html, re.S | re.I)
+
+    if not match:
+        LAST.tt = "data halaman tidak ditemukan (mungkin diblokir/captcha)"
         return None
+
     try:
-        data = json.loads(m.group(1))
-    except ValueError:
-        LAST.tt = "data halaman rusak"
+        data = json.loads(match.group(1))
+    except (ValueError, TypeError):
+        LAST.tt = "data halaman bukan JSON yang valid"
         return None
-    item = find_key(data, "imagePost")
-    if not item or not isinstance(item.get("imagePost"), dict):
-        LAST.tt = "bukan postingan foto"
-        return None
-    photos = []
-    for n, im in enumerate(item["imagePost"].get("images") or [], 1):
-        urls = ((im or {}).get("imageURL") or {}).get("urlList") or []
-        u = next((x for x in urls if isinstance(x, str) and ok_img(x)), None)
-        if u and n <= MAX_PHOTOS:
-            photos.append({"i": n, "u": u})
-    if not photos:
-        LAST.tt = "URL foto tidak dikenali"
-        return None
-    author = item.get("author") if isinstance(item.get("author"), dict) else {}
-    return {"title": text(item.get("desc"))[:120] or "Foto",
-            "uploader": text(author.get("uniqueId")) or text(item.get("author")),
-            "thumbnail": photos[0]["u"], "count": len(photos), "photos": photos}
+
+    photo_items = []
+
+    for node in find_all_key(data, "imagePost"):
+        value = node.get("imagePost")
+        if isinstance(value, dict):
+            photo_items.append(value)
+
+    if not photo_items:
+        for node in find_all_key(data, "itemStruct"):
+            value = node.get("itemStruct")
+            if isinstance(value, dict) and isinstance(value.get("imagePost"), dict):
+                photo_items.append(value["imagePost"])
+
+    for item in photo_items:
+        raw_images = item.get("images") or item.get("imagePost") or []
+
+        if not isinstance(raw_images, list):
+            continue
+
+        photos = []
+
+        for n, im in enumerate(raw_images, 1):
+            urls = image_urls(im)
+
+            if urls and n <= MAX_PHOTOS:
+                photos.append({"i": n, "u": urls[0]})
+
+        if not photos:
+            continue
+
+        author = item.get("author") if isinstance(item.get("author"), dict) else {}
+        desc = item.get("desc") or item.get("description") or item.get("title")
+
+        return {
+            "title": text(desc)[:120] or "Foto TikTok",
+            "uploader": (
+                text(author.get("uniqueId")) or text(author.get("nickname"))
+            ),
+            "thumbnail": photos[0]["u"],
+            "count": len(photos),
+            "photos": photos,
+        }
+
+    LAST.tt = "struktur foto tidak ditemukan di data TikTok"
+    return None
 
 
 def fetch_images(photos, pick, tmp, start):
     out = []
+
     for p in photos:
         if (pick and p["i"] not in pick) or time.time() - start > MAX_TIME:
             continue
+
         try:
             req = urllib.request.Request(p["u"], headers={
-                "User-Agent": UA, "Referer": "https://www.tiktok.com/"})
+                "User-Agent": UA,
+                "Referer": "https://www.tiktok.com/"
+            })
+
             with opener().open(req, timeout=20) as r:
                 data = r.read(MAX_IMG + 1)
+
             if len(data) > MAX_IMG:
                 continue
-            ext = ("png" if data[:4] == b"\x89PNG"
-                   else "webp" if data[8:12] == b"WEBP" else "jpg")
+
+            ext = (
+                "png" if data[:4] == b"\x89PNG"
+                else "webp" if data[8:12] == b"WEBP"
+                else "jpg"
+            )
+
             path = os.path.join(tmp, f"foto-{p['i']}.{ext}")
+
             with open(path, "wb") as f:
                 f.write(data)
+
             out.append(path)
+
         except Exception:
             continue
+
     return out
 
 
 def photo_json(g):
-    return jsonify(title=g["title"], uploader=g["uploader"],
-                   thumbnail=g["thumbnail"], heights=[], duration=None,
-                   size=None, direct_url=None, photo_only=True,
-                   count=g["count"], photos=g["photos"])
+    return jsonify(
+        title=g["title"],
+        uploader=g["uploader"],
+        thumbnail=g["thumbnail"],
+        heights=[],
+        duration=None,
+        size=None,
+        direct_url=None,
+        photo_only=True,
+        count=g["count"],
+        photos=g["photos"]
+    )
 
 
 def gdl_photos(url, tmp, pick=None):
     rng = ",".join(map(str, pick)) if pick else f"1-{MAX_PHOTOS}"
+
     try:
-        gdl("-D", tmp, "--range", rng, "--filesize-max",
-            f"{MAX_MB}M", "--no-mtime", url, timeout=MAX_TIME)
+        gdl(
+            "-D", tmp,
+            "--range", rng,
+            "--filesize-max", f"{MAX_MB}M",
+            "--no-mtime",
+            url,
+            timeout=MAX_TIME
+        )
     except Exception:
         return []
-    return sorted(os.path.join(tmp, f) for f in os.listdir(tmp)
-                  if f.lower().endswith(IMG_EXT))
 
+    return sorted(
+        os.path.join(tmp, f)
+        for f in os.listdir(tmp)
+        if f.lower().endswith(IMG_EXT)
+    )
+
+
+# ---------- Halaman dan API ----------
 
 @app.get("/")
 def home():
     if os.path.exists(os.path.join(BASE, "index.html")):
         return send_from_directory(BASE, "index.html")
+
     return jsonify(ok=True, name="mediaflow-api")
 
 
 @app.get("/api/ping")
 def ping():
-    return jsonify(ok=True, v=VERSION,
-                   gallery_dl=importlib.util.find_spec("gallery_dl") is not None,
-                   cookies=os.path.exists(COOKIES))
+    return jsonify(
+        ok=True,
+        v=VERSION,
+        gallery_dl=importlib.util.find_spec("gallery_dl") is not None,
+        cookies=os.path.exists(COOKIES)
+    )
 
 
 @app.post("/api/info")
 def info():
     if limited():
         return err("rate", 429)
+
     url = (body().get("url") or "").strip()
+
     if not valid(url):
         return err("bad_link")
+
     LAST.tt = LAST.gdl = "-"
+
     if is_tiktok(url) and "/photo/" in url:
         g = tiktok_photos(url)
+
         if g:
             return photo_json(g)
+
+        g, _reason = gdl_info(url)
+
+        if g:
+            return photo_json(g)
+
     try:
-        with yt_dlp.YoutubeDL({**ytdl_base(), "skip_download": True}) as y:
+        with yt_dlp.YoutubeDL({
+            **ytdl_base(),
+            "skip_download": True
+        }) as y:
             d = y.extract_info(url, download=False)
+
     except Exception as e:
-        # Postingan foto biasanya gagal di yt-dlp: coba TikTok langsung, lalu gallery-dl.
         g = tiktok_photos(url) if is_tiktok(url) else None
         reason = ""
+
         if not g:
             g, reason = gdl_info(url)
+
         if g:
             return photo_json(g)
-        detail = (f"yt-dlp: {clean(e, 120)} | tiktok: {LAST.tt} | "
-                  f"gallery-dl: {LAST.gdl}")
+
+        detail = (
+            f"yt-dlp: {clean(e, 120)} | "
+            f"tiktok: {LAST.tt} | "
+            f"gallery-dl: {LAST.gdl}"
+        )
+
         if reason == "no_gdl":
             return err("no_gdl", 500, detail)
+
         if reason == "login" and classify(e, "") != "private":
             return err("login", 400, detail)
+
         return err(classify(e, "read_fail"), 400, detail)
+
     if (d.get("duration") or 0) > MAX_SEC:
         return err("too_long")
+
     fm = d.get("formats") or []
     vids = [f for f in fm if f.get("vcodec") not in (None, "none")]
-    heights = sorted({f["height"] for f in vids if f.get("height")})
-    muxed = [f for f in vids if f.get("url") and f.get("acodec") not in (None, "none")]
+
+    heights = sorted({
+        f["height"] for f in vids if f.get("height")
+    })
+
+    muxed = [
+        f for f in vids
+        if f.get("url") and f.get("acodec") not in (None, "none")
+    ]
+
     best = muxed[-1] if muxed else None
     direct = best["url"] if best else d.get("url")
     size = None
+
     if best:
         size = best.get("filesize") or best.get("filesize_approx")
+
     size = size or d.get("filesize") or d.get("filesize_approx")
-    return jsonify(title=d.get("title"), thumbnail=d.get("thumbnail"),
-                   uploader=d.get("uploader"), heights=heights,
-                   duration=d.get("duration"), size=size, direct_url=direct)
+
+    return jsonify(
+        title=d.get("title"),
+        thumbnail=d.get("thumbnail"),
+        uploader=d.get("uploader"),
+        heights=heights,
+        duration=d.get("duration"),
+        size=size,
+        direct_url=direct
+    )
 
 
 @app.post("/api/download")
 def download():
     if limited():
         return err("rate", 429)
+
     b = body()
     url = (b.get("url") or "").strip()
     kind = b.get("kind", "video")
+
     try:
         h = int(b.get("height") or 0)
     except (TypeError, ValueError):
         h = 0
+
     if not valid(url) or kind not in ("video", "audio", "photo"):
         return err("bad_link")
+
     raw = b.get("pick") if isinstance(b.get("pick"), list) else []
-    pick = sorted({int(x) for x in raw
-                   if str(x).isdigit() and 1 <= int(x) <= MAX_PHOTOS})
+
+    pick = sorted({
+        int(x) for x in raw
+        if str(x).isdigit() and 1 <= int(x) <= MAX_PHOTOS
+    })
+
     if not JOBS.acquire(blocking=False):
         return err("busy", 503)
 
     start = time.time()
+    tmp = tempfile.mkdtemp()
 
     def hook(_):
         if time.time() - start > MAX_TIME:
             raise Exception("timeout")
 
-    tmp = tempfile.mkdtemp()
-    opts = {**ytdl_base(), "retries": 1,
-            "max_filesize": MAX_MB * 1024 * 1024,
-            "match_filter": match_filter_func(f"duration <= {MAX_SEC}"),
-            "progress_hooks": [hook],
-            "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s")}
+    opts = {
+        **ytdl_base(),
+        "retries": 1,
+        "max_filesize": MAX_MB * 1024 * 1024,
+        "match_filter": match_filter_func(f"duration <= {MAX_SEC}"),
+        "progress_hooks": [hook],
+        "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s")
+    }
+
     if kind == "audio":
-        opts.update(format="bestaudio/best", postprocessors=[
-            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
-             "preferredquality": "192"}])
+        opts.update(
+            format="bestaudio/best",
+            postprocessors=[{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192"
+            }]
+        )
+
     elif kind == "video":
-        opts.update(format=(f"best[height<={h}][ext=mp4]/best[height<={h}]/best"
-                            if h else "best[ext=mp4]/best"))
+        opts.update(
+            format=(
+                f"best[height<={h}][ext=mp4]/best[height<={h}]/best"
+                if h else "best[ext=mp4]/best"
+            )
+        )
 
     try:
         if kind == "photo":
             files = []
+
             if is_tiktok(url):
                 g = tiktok_photos(url)
+
                 if g:
                     files = fetch_images(g["photos"], pick, tmp, start)
+
             if not files:
                 files = gdl_photos(url, tmp, pick)
-            if not files:  # cadangan: gambar sampul lewat yt-dlp
+
+            if not files:
                 opts.update(skip_download=True, writethumbnail=True)
+
                 with yt_dlp.YoutubeDL(opts) as y:
                     y.extract_info(url, download=True)
-                files = sorted(os.path.join(tmp, f) for f in os.listdir(tmp))
+
+                files = sorted(
+                    os.path.join(tmp, f) for f in os.listdir(tmp)
+                )
+
+            if not files:
+                raise Exception(
+                    "foto tidak ditemukan; TikTok mungkin memblokir "
+                    "server atau postingan perlu login"
+                )
+
             if len(files) > 1:
                 path = os.path.join(tmp, "mediaflow-foto.zip")
+
                 with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
                     for f in files:
                         z.write(f, os.path.basename(f))
             else:
                 path = files[0]
+
         else:
             with yt_dlp.YoutubeDL(opts) as y:
                 y.extract_info(url, download=True)
+
             path = os.path.join(tmp, os.listdir(tmp)[0])
+
         if os.path.getsize(path) > MAX_MB * 1024 * 1024:
             raise Exception("too big")
+
     except Exception as e:
         shutil.rmtree(tmp, ignore_errors=True)
         return err(classify(e, "dl_fail"))
+
     finally:
         JOBS.release()
 
@@ -424,17 +655,29 @@ def download():
 def feedback():
     if limited():
         return err("rate", 429)
+
     b = body()
     msg = (b.get("message") or "").strip()[:1000]
     contact = (b.get("contact") or "").strip()[:100]
+
     if len(msg) < 5:
         return err("short")
-    # Hanya menyimpan pesan & kontak opsional. URL pengguna tidak disimpan.
-    with open(os.path.join(BASE, "feedback.txt"), "a", encoding="utf-8") as f:
-        f.write(f"{time.strftime('%Y-%m-%d %H:%M')} | {contact} | "
-                f"{msg.replace(chr(10), ' ')}\n")
+
+    with open(
+        os.path.join(BASE, "feedback.txt"),
+        "a",
+        encoding="utf-8"
+    ) as f:
+        f.write(
+            f"{time.strftime('%Y-%m-%d %H:%M')} | {contact} | "
+            f"{msg.replace(chr(10), ' ')}\n"
+        )
+
     return jsonify(ok=True)
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000))
+            )
