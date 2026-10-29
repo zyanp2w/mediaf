@@ -54,11 +54,16 @@ def clean(x, n=200):
 
 def classify(e, default):
     m = str(e).lower()
-    if any(k in m for k in ("private", "login", "log in", "sign in", "cookies",
-                            "restricted", "not available", "removed")):
+    if any(k in m for k in (
+        "private", "login", "log in", "sign in", "cookies",
+        "restricted", "not available", "removed"
+    )):
         return "private"
-    if any(k in m for k in ("http error 5", "unable to download webpage",
-                            "timed out", "connection")):
+    if any(k in m for k in (
+        "http error 5", "unable to download webpage", "timed out",
+        "connection", "429", "too many requests", "rate limit",
+        "temporarily unavailable", "challenge", "captcha"
+    )):
         return "platform"
     return default
 
@@ -77,7 +82,8 @@ def valid(url):
     p = urlparse(url)
     host = (p.hostname or "").lower()
     return len(url) <= 500 and p.scheme in ("http", "https") and any(
-        host == d or host.endswith("." + d) for d in ALLOWED)
+        host == d or host.endswith("." + d) for d in ALLOWED
+    )
 
 
 def body():
@@ -91,14 +97,18 @@ def ytdl_base():
     return o
 
 
-# ---------- Foto lewat gallery-dl ----------
+# ---------- FOTO VIA GALLERY-DL ----------
 
 def gdl(*args, timeout):
     cmd = [sys.executable, "-m", "gallery_dl"]
     if os.path.exists(COOKIES):
         cmd += ["--cookies", COOKIES]
-    return subprocess.run(cmd + list(args), capture_output=True, text=True,
-                          timeout=timeout)
+    return subprocess.run(
+        cmd + list(args),
+        capture_output=True,
+        text=True,
+        timeout=timeout
+    )
 
 
 def text(x):
@@ -109,18 +119,22 @@ def gdl_reason(r):
     e = (r.stderr or "").lower()
     if "no module named" in e:
         return "no_gdl"
-    if any(k in e for k in ("login", "401", "403", "auth", "cookie",
-                            "checkpoint", "challenge")):
+    if any(k in e for k in (
+        "login", "401", "403", "auth", "cookie",
+        "checkpoint", "challenge"
+    )):
         return "login"
     return "none"
 
 
 def gdl_info(url):
-    """Mengembalikan (info, alasan). info None jika tidak ada foto."""
+    """Mengembalikan info foto atau None jika gagal."""
     LAST.gdl = "timeout / gagal dijalankan"
+
     try:
         r = gdl("-j", "--range", f"1-{MAX_PHOTOS}", url, timeout=45)
-    except Exception:
+    except Exception as e:
+        LAST.gdl = clean(e)
         return None, "none"
 
     lines = (r.stderr or "").strip().splitlines()
@@ -133,8 +147,10 @@ def gdl_info(url):
 
     files = [
         e for e in data
-        if isinstance(e, list) and len(e) >= 3
-        and e[0] == 3 and isinstance(e[2], dict)
+        if isinstance(e, list)
+        and len(e) >= 3
+        and e[0] == 3
+        and isinstance(e[2], dict)
     ]
 
     imgs = [
@@ -150,12 +166,16 @@ def gdl_info(url):
 
     return {
         "title": (
-            text(m.get("description")) or text(m.get("title"))
-            or text(m.get("caption")) or "Foto"
+            text(m.get("description"))
+            or text(m.get("title"))
+            or text(m.get("caption"))
+            or "Foto"
         )[:120],
         "uploader": (
-            text(m.get("username")) or text(owner.get("username"))
-            or text(m.get("uploader")) or text(m.get("author"))
+            text(m.get("username"))
+            or text(owner.get("username"))
+            or text(m.get("uploader"))
+            or text(m.get("author"))
         ),
         "thumbnail": imgs[0][1][1],
         "count": len(imgs),
@@ -163,7 +183,7 @@ def gdl_info(url):
     }, ""
 
 
-# ---------- Foto TikTok / slideshow ----------
+# ---------- FOTO TIKTOK ----------
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -173,8 +193,8 @@ UA = (
 
 IMG_HOSTS = (
     ".tiktokcdn.com", ".tiktokcdn-us.com", ".tiktokcdn-eu.com",
-    ".ibyteimg.com", ".byteimg.com", ".tiktokv.com", ".tiktok.com",
-    ".muscdn.com"
+    ".ibyteimg.com", ".byteimg.com", ".tiktokv.com",
+    ".tiktok.com", ".muscdn.com"
 )
 
 MAX_IMG = 25 * 1024 * 1024
@@ -195,7 +215,9 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not (valid(newurl) or ok_img(newurl)):
             raise urllib.error.URLError("redirect diblokir")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        return super().redirect_request(
+            req, fp, code, msg, headers, newurl
+        )
 
 
 def opener():
@@ -206,13 +228,11 @@ def opener():
 
 
 def find_all_key(o, key):
-    """Kumpulkan semua dict yang memiliki key."""
     found = []
 
     if isinstance(o, dict):
         if key in o:
             found.append(o)
-
         for v in o.values():
             found.extend(find_all_key(v, key))
 
@@ -224,15 +244,14 @@ def find_all_key(o, key):
 
 
 def image_urls(image):
-    """Ambil URL foto dari beberapa variasi struktur JSON TikTok."""
     if not isinstance(image, dict):
         return []
 
     candidates = []
 
     for key in (
-        "imageURL", "imageUrl", "displayImage", "display_image",
-        "originImage", "origin_image"
+        "imageURL", "imageUrl", "displayImage",
+        "display_image", "originImage", "origin_image"
     ):
         value = image.get(key)
 
@@ -260,14 +279,15 @@ def image_urls(image):
 
 
 def tiktok_photos(url):
-    """Baca metadata slideshow TikTok dari HTML."""
+    """Membaca metadata slideshow TikTok dari HTML."""
     LAST.tt = ""
 
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": UA,
             "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,*/*;q=0.8"
             ),
             "Accept-Language": "en-US,en;q=0.9",
         })
@@ -307,7 +327,10 @@ def tiktok_photos(url):
     if not photo_items:
         for node in find_all_key(data, "itemStruct"):
             value = node.get("itemStruct")
-            if isinstance(value, dict) and isinstance(value.get("imagePost"), dict):
+            if (
+                isinstance(value, dict)
+                and isinstance(value.get("imagePost"), dict)
+            ):
                 photo_items.append(value["imagePost"])
 
     for item in photo_items:
@@ -320,20 +343,29 @@ def tiktok_photos(url):
 
         for n, im in enumerate(raw_images, 1):
             urls = image_urls(im)
-
             if urls and n <= MAX_PHOTOS:
                 photos.append({"i": n, "u": urls[0]})
 
         if not photos:
             continue
 
-        author = item.get("author") if isinstance(item.get("author"), dict) else {}
-        desc = item.get("desc") or item.get("description") or item.get("title")
+        author = (
+            item.get("author")
+            if isinstance(item.get("author"), dict)
+            else {}
+        )
+
+        desc = (
+            item.get("desc")
+            or item.get("description")
+            or item.get("title")
+        )
 
         return {
             "title": text(desc)[:120] or "Foto TikTok",
             "uploader": (
-                text(author.get("uniqueId")) or text(author.get("nickname"))
+                text(author.get("uniqueId"))
+                or text(author.get("nickname"))
             ),
             "thumbnail": photos[0]["u"],
             "count": len(photos),
@@ -398,34 +430,46 @@ def photo_json(g):
 
 
 def gdl_photos(url, tmp, pick=None):
+    """Download foto lewat gallery-dl."""
     rng = ",".join(map(str, pick)) if pick else f"1-{MAX_PHOTOS}"
 
     try:
-        gdl(
+        result = gdl(
             "-D", tmp,
             "--range", rng,
             "--filesize-max", f"{MAX_MB}M",
-            "--no-mtime",
-            url,
+            "--no-mtime", url,
             timeout=MAX_TIME
         )
-    except Exception:
+
+        output = (result.stderr or result.stdout or "").strip()
+        LAST.gdl = (
+            clean(output.splitlines()[-1])
+            if output else "no diagnostic output"
+        )
+
+    except subprocess.TimeoutExpired:
+        LAST.gdl = "gallery-dl timed out"
+        return []
+
+    except Exception as e:
+        LAST.gdl = clean(e, 120)
         return []
 
     return sorted(
         os.path.join(tmp, f)
         for f in os.listdir(tmp)
-        if f.lower().endswith(IMG_EXT)
+        if os.path.isfile(os.path.join(tmp, f))
+        and f.lower().endswith(IMG_EXT)
     )
 
 
-# ---------- Halaman dan API ----------
+# ---------- HALAMAN UTAMA ----------
 
 @app.get("/")
 def home():
     if os.path.exists(os.path.join(BASE, "index.html")):
         return send_from_directory(BASE, "index.html")
-
     return jsonify(ok=True, name="mediaflow-api")
 
 
@@ -439,6 +483,8 @@ def ping():
     )
 
 
+# ---------- INFO MEDIA ----------
+
 @app.post("/api/info")
 def info():
     if limited():
@@ -451,16 +497,16 @@ def info():
 
     LAST.tt = LAST.gdl = "-"
 
-    if is_tiktok(url) and "/photo/" in url:
+    if is_tiktok(url):
         g = tiktok_photos(url)
 
         if g:
             return photo_json(g)
 
-        g, _reason = gdl_info(url)
-
-        if g:
-            return photo_json(g)
+        if "/photo/" in url:
+            g, _reason = gdl_info(url)
+            if g:
+                return photo_json(g)
 
     try:
         with yt_dlp.YoutubeDL({
@@ -497,7 +543,20 @@ def info():
         return err("too_long")
 
     fm = d.get("formats") or []
-    vids = [f for f in fm if f.get("vcodec") not in (None, "none")]
+
+    # Fallback foto Instagram/Facebook jika tidak ada format video.
+    if not any(
+        f.get("vcodec") not in (None, "none")
+        for f in fm
+    ):
+        g, _reason = gdl_info(url)
+        if g:
+            return photo_json(g)
+
+    vids = [
+        f for f in fm
+        if f.get("vcodec") not in (None, "none")
+    ]
 
     heights = sorted({
         f["height"] for f in vids if f.get("height")
@@ -510,6 +569,7 @@ def info():
 
     best = muxed[-1] if muxed else None
     direct = best["url"] if best else d.get("url")
+
     size = None
 
     if best:
@@ -527,6 +587,8 @@ def info():
         direct_url=direct
     )
 
+
+# ---------- DOWNLOAD ----------
 
 @app.post("/api/download")
 def download():
@@ -556,11 +618,12 @@ def download():
         return err("busy", 503)
 
     start = time.time()
-    tmp = tempfile.mkdtemp()
 
     def hook(_):
         if time.time() - start > MAX_TIME:
             raise Exception("timeout")
+
+    tmp = tempfile.mkdtemp()
 
     opts = {
         **ytdl_base(),
@@ -597,7 +660,9 @@ def download():
                 g = tiktok_photos(url)
 
                 if g:
-                    files = fetch_images(g["photos"], pick, tmp, start)
+                    files = fetch_images(
+                        g["photos"], pick, tmp, start
+                    )
 
             if not files:
                 files = gdl_photos(url, tmp, pick)
@@ -609,19 +674,22 @@ def download():
                     y.extract_info(url, download=True)
 
                 files = sorted(
-                    os.path.join(tmp, f) for f in os.listdir(tmp)
+                    os.path.join(tmp, f)
+                    for f in os.listdir(tmp)
                 )
 
             if not files:
                 raise Exception(
-                    "foto tidak ditemukan; TikTok mungkin memblokir "
-                    "server atau postingan perlu login"
+                    "foto tidak ditemukan; server mungkin diblokir "
+                    "atau postingan perlu login"
                 )
 
             if len(files) > 1:
                 path = os.path.join(tmp, "mediaflow-foto.zip")
 
-                with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:
+                with zipfile.ZipFile(
+                    path, "w", zipfile.ZIP_STORED
+                ) as z:
                     for f in files:
                         z.write(f, os.path.basename(f))
             else:
@@ -650,6 +718,8 @@ def download():
 
     return send_file(path, as_attachment=True)
 
+
+# ---------- FEEDBACK ----------
 
 @app.post("/api/feedback")
 def feedback():
@@ -680,4 +750,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5000))
-            )
+    )
